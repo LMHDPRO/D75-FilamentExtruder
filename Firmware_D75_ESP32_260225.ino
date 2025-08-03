@@ -1,143 +1,206 @@
-//LCD config
-#include <Wire.h> 
-#include <LiquidCrystal_I2C.h>
-LiquidCrystal_I2C lcd(0x3F, 16, 2);  // Change to 0x27 if address is different
-
-//Thermistor needed libraries
-#include <thermistor.h>           // Ensure this library is compatible with ESP32
-thermistor therm1(34, 0);         // Connect thermistor to GPIO 34 (Analog pin on ESP32)
-
-//I/O
-int PWM_pin = 5;                  // GPIO 5 for PWM signal to the MOSFET driver
-int speed_pot = 35;               // GPIO 35 for speed potentiometer (Analog pin on ESP32)
-int but1 = 23;                    // GPIO 23 for button
-int EN = 22;                      // GPIO 22 for stepper enable
-int STEP = 18;                    // GPIO 18 for stepper step
-int DIR = 19;                     // GPIO 19 for stepper direction
-int LED = 2;                      // GPIO 2 for LED (built-in LED on ESP32)
-
-//Variables
-float set_temperature = 200;      // Default temperature setpoint
-float temperature_read = 0.0;
-float PID_error = 0;
-float previous_error = 0;
-float elapsedTime, Time, timePrev;
-float PID_value = 0;
-int button_pressed = 0;
-int menu_activated = 0;
-float last_set_temperature = 0;
-int max_PWM = 255;
-
-//Stepper Variables
-int max_speed = 1000;
-int main_speed = 0;
-bool but1_state = true;
-bool activate_stepper = false;
-int rotating_speed = 0;
-
+#include <RotaryEncoder.h>
+#include <PID_v1.h>
 #include <AccelStepper.h>
-// Define a stepper and the pins it will use
-AccelStepper stepper1(AccelStepper::DRIVER, STEP, DIR);
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
 
-//PID constants
-int kp = 90;   int ki = 30;   int kd = 80;
+#define ENCODER_USE_INTERRUPTS
+#define ENCODER_OPTIMIZE_INTERRUPTS
 
-int PID_p = 0;    int PID_i = 0;    int PID_d = 0;
-float last_kp = 0;
-float last_ki = 0;
-float last_kd = 0;
+// Pines
+#define ENCODER_CLK 2
+#define ENCODER_DT 3
+#define ENCODER_SW 4
+#define SENSOR_PIN A0
+#define HEATER_PIN 9
 
-int PID_values_fixed = 0;
+#define dirPin 5
+#define stepPin 6
+#define dir2Pin 10
+#define step2Pin 11
 
-// Timer for stepper motor
-hw_timer_t *timer = NULL;
-portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+AccelStepper stepper1(AccelStepper::DRIVER, stepPin, dirPin);
+AccelStepper stepper2(AccelStepper::DRIVER, step2Pin, dir2Pin);
 
-void IRAM_ATTR onTimer() {
-  portENTER_CRITICAL_ISR(&timerMux);
-  stepper1.runSpeed();
-  portEXIT_CRITICAL_ISR(&timerMux);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+unsigned long lastLcdUpdate = 0;
+const unsigned long lcdUpdateInterval = 1000; // 1 segundo
+
+// Encoder
+RotaryEncoder encoder(ENCODER_DT, ENCODER_CLK, RotaryEncoder::LatchMode::FOUR3);
+int lastButtonState = HIGH;
+int lastPos = 0;
+bool settingTemp = true;
+
+// Variables principales
+double temp = 0;
+int targetTemp = 160;
+int rpm = 100;
+
+// PID
+double inputTemp, outputPWM, setpointTemp = 160;
+double Kp = 35.0, Ki = 0.5, Kd = 0.0;
+PID myPID(&inputTemp, &outputPWM, &setpointTemp, Kp, Ki, Kd, DIRECT);
+
+// Debounce
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 200;
+
+// Buffers para detectar cambios
+double lastTemp = -1.0;
+int lastTargetTemp = -1;
+int lastRpm = -1;
+bool lastSettingTemp = true;
+
+// Mapeo temperatura-voltaje
+float temps[] = {
+  20, 110, 115, 120, 125, 130, 135, 140, 145,
+  150, 155, 160, 165, 170, 175, 180, 185, 
+  190, 195, 200, 205, 210, 215, 220, 225, 230
+};
+
+float voltages[] = {
+  3.30, 2.94, 2.92, 2.89, 2.87, 2.85, 2.83, 2.79, 2.76,
+  2.70, 2.63, 2.39, 2.19, 1.96, 1.79, 1.61, 1.45,
+  1.31, 1.20, 1.07, 0.97, 0.88, 0.79, 0.72, 0.65, 0.59
+};
+
+float voltageToTemperature(float voltage) {
+  int numPoints = sizeof(temps) / sizeof(temps[0]);
+  for (int i = 0; i < numPoints - 1; i++) {
+    if (voltage <= voltages[i] && voltage >= voltages[i + 1]) {
+      float slope = (temps[i + 1] - temps[i]) / (voltages[i + 1] - voltages[i]);
+      return temps[i] + slope * (voltage - voltages[i]);
+    }
+  }
+  return temps[numPoints - 1];
 }
 
 void setup() {
-  pinMode(EN, OUTPUT);
-  digitalWrite(EN, HIGH);     // Stepper driver is disabled
-  stepper1.setMaxSpeed(max_speed);
-  pinMode(but1, INPUT_PULLUP);
-  pinMode(speed_pot, INPUT);
-  pinMode(LED, OUTPUT);
-  digitalWrite(LED, LOW);
+  Serial.begin(115200);          // Serial rápido
+  Wire.begin();
+  Wire.setClock(400000);         // I2C a 400kHz para acelerar LCD
 
-  pinMode(PWM_pin, OUTPUT);
-  ledcSetup(0, 7812, 8);      // Configure PWM channel 0, 7812 Hz, 8-bit resolution
-  ledcAttachPin(PWM_pin, 0);  // Attach PWM pin to channel 0
+  attachInterrupt(digitalPinToInterrupt(ENCODER_DT), checkEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_CLK), checkEncoder, CHANGE);
 
-  Time = millis();
+  pinMode(stepPin, OUTPUT);
+  pinMode(dirPin, OUTPUT);
 
-  // Initialize LCD
+  stepper1.setMaxSpeed(2000);
+  stepper2.setMaxSpeed(2000);
+
+  pinMode(ENCODER_SW, INPUT_PULLUP);
+  pinMode(HEATER_PIN, OUTPUT);
+
+  encoder.setPosition(0);
+
+  myPID.SetMode(AUTOMATIC);
+  myPID.SetOutputLimits(0, 255);
+
   lcd.init();
   lcd.backlight();
-
-  // Initialize timer for stepper motor
-  timer = timerBegin(0, 80, true);  // Timer 0, prescaler 80 (1 MHz)
-  timerAttachInterrupt(timer, &onTimer, true);
-  timerAlarmWrite(timer, 1000, true);  // 1 ms interval
-  timerAlarmEnable(timer);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Extrusora Init OK");
+  delay(1000);
+  lcd.clear();
 }
 
 void loop() {
-  if (!digitalRead(but1) && but1_state) {
-    but1_state = false;
-    activate_stepper = !activate_stepper;
-    delay(10);
-  } else if (digitalRead(but1) && !but1_state) {
-    but1_state = true;
+  checkEncoder();
+  stepper1.setSpeed(-300);
+  stepper1.run();
+  stepper2.setSpeed(-300);
+  stepper2.run();
+
+  int buttonState = digitalRead(ENCODER_SW);
+  unsigned long currentTime = millis();
+  if (buttonState == LOW && lastButtonState == HIGH && (currentTime - lastDebounceTime > debounceDelay)) {
+    settingTemp = !settingTemp;
+    Serial.print("Modo: ");
+    Serial.println(settingTemp ? "Temperatura" : "RPM");
+    lastDebounceTime = currentTime;
+  }
+  lastButtonState = buttonState;
+  stepper1.run();
+  // Leer posición del encoder
+  int newPos = encoder.getPosition();
+  if (newPos != lastPos) {
+    int delta = newPos - lastPos;
+    if (settingTemp) {
+      targetTemp += delta;
+      if (targetTemp < 0) targetTemp = 0;
+    } else {
+      rpm += delta * 10;
+      if (rpm < 0) rpm = 0;
+      // Aquí mover velocidad stepper si quieres
+    }
+    lastPos = newPos;
+  }
+  stepper1.run();
+  // Leer voltaje y convertir a temperatura
+  int rawADC = analogRead(SENSOR_PIN);
+  float voltage = rawADC * (5.0 / 1023.0);
+  temp = voltageToTemperature(voltage);
+  inputTemp = temp;
+  setpointTemp = targetTemp;
+
+  // PID
+  myPID.Compute();
+  analogWrite(HEATER_PIN, (int)outputPWM);
+  stepper1.run();
+  if (currentTime - lastLcdUpdate >= lcdUpdateInterval) {
+  bool changed = false;
+
+  if (abs(temp - lastTemp) > 0.1) {
+    lastTemp = temp;
+    changed = true;
+  }
+  if (targetTemp != lastTargetTemp) {
+    lastTargetTemp = targetTemp;
+    changed = true;
+  }
+  if (rpm != lastRpm) {
+    lastRpm = rpm;
+    changed = true;
+  }
+  if (settingTemp != lastSettingTemp) {
+    lastSettingTemp = settingTemp;
+    changed = true;
   }
 
-  if (activate_stepper) {
-    digitalWrite(LED, HIGH);
-    digitalWrite(EN, LOW);    // Activate stepper driver
-    rotating_speed = map(analogRead(speed_pot), 0, 4095, main_speed, max_speed);  // ESP32 ADC is 12-bit
-    stepper1.setSpeed(rotating_speed);
-  } else {
-    digitalWrite(EN, HIGH);    // Deactivate stepper driver
-    digitalWrite(LED, LOW);
-    stepper1.setSpeed(0);
+  if (changed) {
+    // Evitar lcd.clear() para que no parpadee
+    lcd.setCursor(0, 0);
+    lcd.print("T:");
+    lcd.print(temp, 1);
+    lcd.print("C O:");
+    lcd.print(targetTemp);
+    lcd.print("C   ");  // Espacios para limpiar resto
+
+    lcd.setCursor(0, 1);
+    lcd.print(settingTemp ? "Modo:T " : "Modo:R ");
+    lcd.print("RPM:");
+    lcd.print(rpm);
+    lcd.print("   ");  // Espacios para limpiar resto
+
+    // Serial
+    //Serial.print("Temp: ");
+    Serial.print(temp, 1);
+    Serial.print(", ");
+    Serial.println(targetTemp);
+    //Serial.print(" C | RPM: ");
+    //Serial.println(rpm);
   }
 
-  // Read temperature
-  temperature_read = therm1.analog2temp();
+  lastLcdUpdate = currentTime;
+}
+  checkEncoder();
+  stepper1.run();
+  stepper2.run();
+}
 
-  // Calculate PID error
-  PID_error = set_temperature - temperature_read + 6;
-  PID_p = 0.01 * kp * PID_error;
-  PID_i = 0.01 * PID_i + (ki * PID_error);
-
-  // Calculate derivative
-  timePrev = Time;
-  Time = millis();
-  elapsedTime = (Time - timePrev) / 1000;
-  PID_d = 0.01 * kd * ((PID_error - previous_error) / elapsedTime);
-  PID_value = PID_p + PID_i + PID_d;
-
-  // Limit PID value
-  if (PID_value < 0) PID_value = 0;
-  if (PID_value > max_PWM) PID_value = max_PWM;
-
-  // Write PWM signal
-  ledcWrite(0, PID_value);  // Use ledcWrite for PWM on ESP32
-  previous_error = PID_error;
-
-  // Update LCD
-  delay(250);
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("T: ");
-  lcd.print(temperature_read, 1);
-  lcd.print(" S: ");
-  lcd.print(rotating_speed);
-
-  lcd.setCursor(0, 1);
-  lcd.print("PID: ");
-  lcd.print(PID_value);
+void checkEncoder() {
+  encoder.tick();  // obligatorio si usas interrupciones
 }
