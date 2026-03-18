@@ -84,107 +84,75 @@ def apply_dark_style():
 
 
 class MotorCard(tk.Frame):
-    """Card de control independiente para un motor."""
-
-    def __init__(self, parent, motor_id: int, send_fn, **kw):
+    """
+    Velocidad + JOG por motor.
+    Enable = hardware compartido (un pin TB6600 para ambos) → control global en App.
+    JOG = solo parar/reanudar pulsos STEP sin tocar enable.
+    """
+    def __init__(self, parent, motor_id, send_fn, **kw):
         super().__init__(parent, bg=SURF, highlightthickness=1,
                          highlightbackground=BORDER, **kw)
-        self.mid      = motor_id        # 1 o 2
-        self._send    = send_fn
-        self._enabled = True
+        self.mid = motor_id
+        self._send = send_fn
         self._jogging = False
-
         self._build()
 
     def _build(self):
-        # ── Cabecera ──
-        hdr = tk.Frame(self, bg=SURF); hdr.pack(fill=tk.X, padx=12, pady=(10, 6))
-        self._title = tk.Label(hdr, text=f"Motor {self.mid}",
-                               bg=SURF, fg=TXT, font=(FONT, 11, "bold"))
-        self._title.pack(side=tk.LEFT)
-
-        # Badge estado
-        self._badge = tk.Label(hdr, text="● ACTIVO", bg=SURF,
-                                fg=C_GREEN, font=(FONT, 8, "bold"))
-        self._badge.pack(side=tk.RIGHT)
-
-        # Separador
+        hdr = tk.Frame(self, bg=SURF)
+        hdr.pack(fill=tk.X, padx=12, pady=(10,6))
+        tk.Label(hdr, text=f"Motor {self.mid}",
+                 bg=SURF, fg=TXT, font=(FONT,11,"bold")).pack(side=tk.LEFT)
+        self._lbl_rpm = tk.Label(hdr, text="100 RPM",
+                                  bg=SURF, fg=C_BLUE, font=(FONT,15,"bold"))
+        self._lbl_rpm.pack(side=tk.RIGHT)
         tk.Frame(self, bg=BORDER, height=1).pack(fill=tk.X, padx=12)
 
-        # ── RPM actual (display) ──
-        self._lbl_rpm = tk.Label(self, text="100 RPM", bg=SURF,
-                                  fg=C_BLUE, font=(FONT, 20, "bold"))
-        self._lbl_rpm.pack(pady=(8, 4))
-
-        # ── Presets ──
-        pr = tk.Frame(self, bg=SURF); pr.pack(fill=tk.X, padx=12, pady=(0, 6))
+        pr = tk.Frame(self, bg=SURF)
+        pr.pack(fill=tk.X, padx=12, pady=(8,6))
         self._preset_btns = {}
         colors = {"Lento": C_TEAL, "Normal": C_BLUE, "Rápido": C_PURPLE}
         for label, rpm in PRESETS.items():
             btn = tk.Button(pr, text=label,
                             command=lambda r=rpm, l=label: self._set_preset(r, l),
                             bg=SURF2, fg=colors[label], relief=tk.FLAT,
-                            font=(FONT, 9, "bold"), cursor="hand2",
-                            activebackground=BORDER2, activeforeground=colors[label],
+                            font=(FONT,9,"bold"), cursor="hand2",
+                            activebackground=BORDER2,
                             highlightthickness=1, highlightbackground=BORDER,
                             padx=6, pady=4)
             btn.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
             self._preset_btns[label] = (btn, colors[label])
 
-        # ── RPM personalizado ──
-        cr = tk.Frame(self, bg=SURF); cr.pack(fill=tk.X, padx=12, pady=(0, 6))
-        self._entry = tk.Entry(cr, width=6, font=(FONT, 11), justify=tk.CENTER,
+        cr = tk.Frame(self, bg=SURF)
+        cr.pack(fill=tk.X, padx=12, pady=(0,10))
+        self._entry = tk.Entry(cr, width=5, font=(FONT,10), justify=tk.CENTER,
                                 bg=SURF2, fg=TXT, insertbackground=TXT,
                                 relief=tk.FLAT, highlightthickness=1,
                                 highlightbackground=BORDER)
-        self._entry.insert(0, "100"); self._entry.pack(side=tk.LEFT, padx=(0, 6))
-        tk.Label(cr, text="RPM", bg=SURF, fg=TXT2,
-                 font=(FONT, 9)).pack(side=tk.LEFT)
-        tk.Button(cr, text="Aplicar", command=self._apply_custom,
+        self._entry.insert(0, "100")
+        self._entry.pack(side=tk.LEFT, padx=(0,4))
+        tk.Label(cr, text="RPM", bg=SURF, fg=TXT2, font=(FONT,9)).pack(side=tk.LEFT)
+        tk.Button(cr, text="OK", command=self._apply_custom,
                   bg=C_GREEN2, fg=C_GREEN, relief=tk.FLAT,
-                  font=(FONT, 9, "bold"), cursor="hand2",
-                  activebackground=BORDER2, activeforeground=C_GREEN,
-                  padx=8, pady=3).pack(side=tk.RIGHT)
-
-        # ── Separador ──
-        tk.Frame(self, bg=BORDER, height=1).pack(fill=tk.X, padx=12, pady=(2, 6))
-
-        # ── Botones JOG y Enable ──
-        bot = tk.Frame(self, bg=SURF); bot.pack(fill=tk.X, padx=12, pady=(0, 10))
-
-        self._btn_jog = tk.Button(bot, text="▶ JOG",
+                  font=(FONT,9,"bold"), cursor="hand2",
+                  padx=6, pady=3).pack(side=tk.LEFT, padx=(6,0))
+        self._btn_jog = tk.Button(cr, text="▶ JOG",
                                    command=self._toggle_jog,
-                                   bg=SURF2, fg=C_BLUE, relief=tk.FLAT,
-                                   font=(FONT, 9, "bold"), cursor="hand2",
+                                   bg=SURF2, fg=C_AMBER, relief=tk.FLAT,
+                                   font=(FONT,9,"bold"), cursor="hand2",
                                    activebackground=BORDER2,
-                                   highlightthickness=1,
-                                   highlightbackground=BORDER,
-                                   padx=8, pady=4)
-        self._btn_jog.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+                                   highlightthickness=1, highlightbackground=BORDER,
+                                   padx=8, pady=3)
+        self._btn_jog.pack(side=tk.RIGHT)
 
-        self._btn_en = tk.Button(bot, text="Deshabilitar",
-                                  command=self._toggle_enable,
-                                  bg=SURF2, fg=C_AMBER, relief=tk.FLAT,
-                                  font=(FONT, 9, "bold"), cursor="hand2",
-                                  activebackground=BORDER2,
-                                  highlightthickness=1,
-                                  highlightbackground=BORDER,
-                                  padx=8, pady=4)
-        self._btn_en.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-    def set_rpm_display(self, rpm: int):
+    def set_rpm_display(self, rpm):
         self._lbl_rpm.config(text=f"{rpm} RPM")
 
-    def _set_preset(self, rpm: int, label: str):
+    def _set_preset(self, rpm, label):
         self._entry.delete(0, tk.END); self._entry.insert(0, str(rpm))
         self._send(f"SD{self.mid}:{rpm}")
         self._lbl_rpm.config(text=f"{rpm} RPM")
-        # Resaltar botón seleccionado
-        for lbl, (btn, color) in self._preset_btns.items():
-            if lbl == label:
-                btn.config(bg=BORDER2)
-            else:
-                btn.config(bg=SURF2)
+        for lbl, (btn, _) in self._preset_btns.items():
+            btn.config(bg=BORDER2 if lbl==label else SURF2)
 
     def _apply_custom(self):
         try:
@@ -201,22 +169,10 @@ class MotorCard(tk.Frame):
         self._jogging = not self._jogging
         if self._jogging:
             self._send(f"JOG{self.mid}:1")
-            self._btn_jog.config(text="■ JOG ON", fg=C_RED, bg=BORDER2)
+            self._btn_jog.config(text="■ JOG", fg=C_RED, bg=BORDER2)
         else:
             self._send(f"JOG{self.mid}:0")
-            self._btn_jog.config(text="▶ JOG", fg=C_BLUE, bg=SURF2)
-
-    def _toggle_enable(self):
-        self._enabled = not self._enabled
-        self._send(f"EN{self.mid}:{'1' if self._enabled else '0'}")
-        if self._enabled:
-            self._btn_en.config(text="Deshabilitar", fg=C_AMBER, bg=SURF2)
-            self._badge.config(text="● ACTIVO", fg=C_GREEN)
-            self._title.config(fg=TXT)
-        else:
-            self._btn_en.config(text="Habilitar", fg=C_GREEN, bg=SURF2)
-            self._badge.config(text="○ INACTIVO", fg=TXT3)
-            self._title.config(fg=TXT3)
+            self._btn_jog.config(text="▶ JOG", fg=C_AMBER, bg=SURF2)
 
 
 class App(tk.Tk):
@@ -362,7 +318,24 @@ class App(tk.Tk):
         self._m1 = MotorCard(f, 1, self._send)
         self._m1.pack(fill=tk.X, pady=(0, 6))
         self._m2 = MotorCard(f, 2, self._send)
-        self._m2.pack(fill=tk.X, pady=(0, 8))
+        self._m2.pack(fill=tk.X, pady=(0, 6))
+
+        # Enable global drivers (pin compartido ambos TB6600)
+        en_row = tk.Frame(f, bg=BG)
+        en_row.pack(fill=tk.X, pady=(0, 8))
+        self._drivers_enabled = True
+        self._btn_en_drv = tk.Button(en_row,
+                                      text="⚡  DRIVERS HABILITADOS",
+                                      command=self._toggle_drivers,
+                                      bg=SURF2, fg=C_GREEN, relief=tk.FLAT,
+                                      font=(FONT, 9, "bold"), cursor="hand2",
+                                      activebackground=BORDER2,
+                                      highlightthickness=1,
+                                      highlightbackground=C_GREEN,
+                                      pady=5)
+        self._btn_en_drv.pack(fill=tk.X)
+        tk.Label(en_row, text="EN_DRV es un solo pin — afecta ambos TB6600 simultáneamente",
+                 bg=BG, fg=TXT3, font=(FONT, 7)).pack(pady=(2,0))
 
         # Ventilador + RUN/STOP en una fila
         bot_row = tk.Frame(f, bg=BG); bot_row.pack(fill=tk.X)
@@ -612,6 +585,16 @@ class App(tk.Tk):
             return False
         self.ser.write(f"{cmd}\n".encode())
         return True
+
+    def _toggle_drivers(self):
+        self._drivers_enabled = not self._drivers_enabled
+        self._send(f"EN:{'1' if self._drivers_enabled else '0'}")
+        if self._drivers_enabled:
+            self._btn_en_drv.config(text="⚡  DRIVERS HABILITADOS",
+                                     fg=C_GREEN, highlightbackground=C_GREEN)
+        else:
+            self._btn_en_drv.config(text="○  DRIVERS DESHABILITADOS",
+                                     fg=TXT3, highlightbackground=BORDER)
 
     def _send_sp(self):
         self._send(f"ST:{max(T_MIN, min(T_MAX, self._vSP.get()))}")
