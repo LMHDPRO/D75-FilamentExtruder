@@ -1,0 +1,630 @@
+"""
+extrusora_gui.py — Panel de control Douglas75  v4  [Dark Mode]
+==============================================================
+Requiere:  pip install pyserial matplotlib
+
+Protocolo serial (115200 baud):
+  ESP32→PC : "T:160.5,S:160,D1:100,D2:100,P:127,F:64,RUN:1\\n"
+  PC→ESP32 : ST:165 | SD1:100 | SD2:120 | SF:1 | RUN | STOP
+             JOG1:1 | JOG1:0  | JOG2:1 | JOG2:0
+             EN1:1  | EN1:0   | EN2:1  | EN2:0   (habilitar/deshabilitar por motor)
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+import serial, serial.tools.list_ports
+import threading, time, re, math
+from collections import deque
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
+
+# ── Paleta oscura ────────────────────────────────────────────────────
+BG      = "#0f0f17"   # fondo general
+SURF    = "#1a1a28"   # superficies / cards
+SURF2   = "#22223a"   # cards más claras
+BORDER  = "#2e2e4a"   # bordes
+BORDER2 = "#3d3d5c"   # bordes hover
+
+C_RED    = "#ef5350"
+C_RED2   = "#b71c1c"  # botón hover
+C_BLUE   = "#5c9bff"
+C_BLUE2  = "#1a4a8a"
+C_GREEN  = "#4caf7d"
+C_GREEN2 = "#1b5e3b"
+C_AMBER  = "#ffb74d"
+C_TEAL   = "#4dd0c4"
+C_PURPLE = "#9c7fff"
+
+TXT     = "#e8e8f0"   # texto primario
+TXT2    = "#8888a8"   # texto secundario
+TXT3    = "#55557a"   # texto tenue
+
+FONT = "Helvetica"
+
+# ── Constantes ───────────────────────────────────────────────────────
+BAUD       = 115200
+CHART_SECS = 120
+MAX_PTS    = 1200
+T_MIN, T_MAX, T_INIT = 20, 260, 160
+R_MIN, R_MAX         =  0, 300
+
+DRIVE_DIAM_MM  = 11.0
+OUTPUT_DIAM_MM =  1.75
+PP_DENSITY     =  0.91
+
+# Presets independientes por motor
+PRESETS = {"Lento": 50, "Normal": 100, "Rápido": 180}
+
+PAT = re.compile(
+    r"T:([\d.]+|ERR),S:(\d+),D1:(\d+),D2:(\d+),P:(\d+),F:(\d+),RUN:(\d+)")
+
+
+def mm_per_min(rpm):
+    return rpm * math.pi * DRIVE_DIAM_MM
+
+def grams_per_hour(rpm):
+    r = (OUTPUT_DIAM_MM / 2) / 10
+    return math.pi * r**2 * (mm_per_min(rpm) / 10) * PP_DENSITY * 60
+
+
+# ── Estilo ttk oscuro ────────────────────────────────────────────────
+def apply_dark_style():
+    style = ttk.Style()
+    style.theme_use("default")
+    style.configure("TCombobox",
+                    fieldbackground=SURF2, background=SURF2,
+                    foreground=TXT, selectbackground=C_BLUE2,
+                    selectforeground=TXT, bordercolor=BORDER,
+                    arrowcolor=TXT2, relief="flat")
+    style.map("TCombobox", fieldbackground=[("readonly", SURF2)],
+              foreground=[("readonly", TXT)])
+
+
+class MotorCard(tk.Frame):
+    """Card de control independiente para un motor."""
+
+    def __init__(self, parent, motor_id: int, send_fn, **kw):
+        super().__init__(parent, bg=SURF, highlightthickness=1,
+                         highlightbackground=BORDER, **kw)
+        self.mid      = motor_id        # 1 o 2
+        self._send    = send_fn
+        self._enabled = True
+        self._jogging = False
+
+        self._build()
+
+    def _build(self):
+        # ── Cabecera ──
+        hdr = tk.Frame(self, bg=SURF); hdr.pack(fill=tk.X, padx=12, pady=(10, 6))
+        self._title = tk.Label(hdr, text=f"Motor {self.mid}",
+                               bg=SURF, fg=TXT, font=(FONT, 11, "bold"))
+        self._title.pack(side=tk.LEFT)
+
+        # Badge estado
+        self._badge = tk.Label(hdr, text="● ACTIVO", bg=SURF,
+                                fg=C_GREEN, font=(FONT, 8, "bold"))
+        self._badge.pack(side=tk.RIGHT)
+
+        # Separador
+        tk.Frame(self, bg=BORDER, height=1).pack(fill=tk.X, padx=12)
+
+        # ── RPM actual (display) ──
+        self._lbl_rpm = tk.Label(self, text="100 RPM", bg=SURF,
+                                  fg=C_BLUE, font=(FONT, 20, "bold"))
+        self._lbl_rpm.pack(pady=(8, 4))
+
+        # ── Presets ──
+        pr = tk.Frame(self, bg=SURF); pr.pack(fill=tk.X, padx=12, pady=(0, 6))
+        self._preset_btns = {}
+        colors = {"Lento": C_TEAL, "Normal": C_BLUE, "Rápido": C_PURPLE}
+        for label, rpm in PRESETS.items():
+            btn = tk.Button(pr, text=label,
+                            command=lambda r=rpm, l=label: self._set_preset(r, l),
+                            bg=SURF2, fg=colors[label], relief=tk.FLAT,
+                            font=(FONT, 9, "bold"), cursor="hand2",
+                            activebackground=BORDER2, activeforeground=colors[label],
+                            highlightthickness=1, highlightbackground=BORDER,
+                            padx=6, pady=4)
+            btn.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+            self._preset_btns[label] = (btn, colors[label])
+
+        # ── RPM personalizado ──
+        cr = tk.Frame(self, bg=SURF); cr.pack(fill=tk.X, padx=12, pady=(0, 6))
+        self._entry = tk.Entry(cr, width=6, font=(FONT, 11), justify=tk.CENTER,
+                                bg=SURF2, fg=TXT, insertbackground=TXT,
+                                relief=tk.FLAT, highlightthickness=1,
+                                highlightbackground=BORDER)
+        self._entry.insert(0, "100"); self._entry.pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(cr, text="RPM", bg=SURF, fg=TXT2,
+                 font=(FONT, 9)).pack(side=tk.LEFT)
+        tk.Button(cr, text="Aplicar", command=self._apply_custom,
+                  bg=C_GREEN2, fg=C_GREEN, relief=tk.FLAT,
+                  font=(FONT, 9, "bold"), cursor="hand2",
+                  activebackground=BORDER2, activeforeground=C_GREEN,
+                  padx=8, pady=3).pack(side=tk.RIGHT)
+
+        # ── Separador ──
+        tk.Frame(self, bg=BORDER, height=1).pack(fill=tk.X, padx=12, pady=(2, 6))
+
+        # ── Botones JOG y Enable ──
+        bot = tk.Frame(self, bg=SURF); bot.pack(fill=tk.X, padx=12, pady=(0, 10))
+
+        self._btn_jog = tk.Button(bot, text="▶ JOG",
+                                   command=self._toggle_jog,
+                                   bg=SURF2, fg=C_BLUE, relief=tk.FLAT,
+                                   font=(FONT, 9, "bold"), cursor="hand2",
+                                   activebackground=BORDER2,
+                                   highlightthickness=1,
+                                   highlightbackground=BORDER,
+                                   padx=8, pady=4)
+        self._btn_jog.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        self._btn_en = tk.Button(bot, text="Deshabilitar",
+                                  command=self._toggle_enable,
+                                  bg=SURF2, fg=C_AMBER, relief=tk.FLAT,
+                                  font=(FONT, 9, "bold"), cursor="hand2",
+                                  activebackground=BORDER2,
+                                  highlightthickness=1,
+                                  highlightbackground=BORDER,
+                                  padx=8, pady=4)
+        self._btn_en.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def set_rpm_display(self, rpm: int):
+        self._lbl_rpm.config(text=f"{rpm} RPM")
+
+    def _set_preset(self, rpm: int, label: str):
+        self._entry.delete(0, tk.END); self._entry.insert(0, str(rpm))
+        self._send(f"SD{self.mid}:{rpm}")
+        self._lbl_rpm.config(text=f"{rpm} RPM")
+        # Resaltar botón seleccionado
+        for lbl, (btn, color) in self._preset_btns.items():
+            if lbl == label:
+                btn.config(bg=BORDER2)
+            else:
+                btn.config(bg=SURF2)
+
+    def _apply_custom(self):
+        try:
+            rpm = max(R_MIN, min(R_MAX, int(self._entry.get())))
+        except ValueError:
+            messagebox.showwarning("Valor inválido", "Ingresa un número entero.")
+            return
+        self._send(f"SD{self.mid}:{rpm}")
+        self._lbl_rpm.config(text=f"{rpm} RPM")
+        for _, (btn, _) in self._preset_btns.items():
+            btn.config(bg=SURF2)
+
+    def _toggle_jog(self):
+        self._jogging = not self._jogging
+        if self._jogging:
+            self._send(f"JOG{self.mid}:1")
+            self._btn_jog.config(text="■ JOG ON", fg=C_RED, bg=BORDER2)
+        else:
+            self._send(f"JOG{self.mid}:0")
+            self._btn_jog.config(text="▶ JOG", fg=C_BLUE, bg=SURF2)
+
+    def _toggle_enable(self):
+        self._enabled = not self._enabled
+        self._send(f"EN{self.mid}:{'1' if self._enabled else '0'}")
+        if self._enabled:
+            self._btn_en.config(text="Deshabilitar", fg=C_AMBER, bg=SURF2)
+            self._badge.config(text="● ACTIVO", fg=C_GREEN)
+            self._title.config(fg=TXT)
+        else:
+            self._btn_en.config(text="Habilitar", fg=C_GREEN, bg=SURF2)
+            self._badge.config(text="○ INACTIVO", fg=TXT3)
+            self._title.config(fg=TXT3)
+
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Douglas75")
+        self.geometry("1240x740")
+        self.minsize(1000, 640)
+        self.configure(bg=BG)
+        apply_dark_style()
+
+        self.ser: serial.Serial | None = None
+        self.connected   = False
+        self.esp_running = False
+        self.t0          = time.time()
+        self.filament_mm = 0.0
+        self._last_d1    = 0
+        self._last_d2    = 0
+        self.bt  = deque(maxlen=MAX_PTS)
+        self.bT  = deque(maxlen=MAX_PTS)
+        self.bSP = deque(maxlen=MAX_PTS)
+
+        self._port    = tk.StringVar()
+        self._status  = tk.StringVar(value="●  Desconectado")
+        self._vTemp   = tk.StringVar(value="—")
+        self._vPwm    = tk.StringVar(value="—")
+        self._vFan    = tk.StringVar(value="—")
+        self._vSP     = tk.IntVar(value=T_INIT)
+        self._dSP     = tk.StringVar(value=f"{T_INIT} °C")
+        self._fanAuto = tk.BooleanVar(value=True)
+        self._lastMsg = tk.StringVar(value="Sin conexión")
+        self._warnMsg = tk.StringVar(value="")
+        self._vFilMm  = tk.StringVar(value="0 mm")
+        self._vFilG   = tk.StringVar(value="0.00 g")
+        self._vRate   = tk.StringVar(value="0 mm/min")
+        self._vRateG  = tk.StringVar(value="0.0 g/h")
+
+        self._vSP.trace_add("write",
+            lambda *_: self._dSP.set(f"{self._vSP.get()} °C"))
+
+        self._build()
+        self._scan_ports()
+        self._tick_chart()
+        self._tick_filament()
+        self.protocol("WM_DELETE_WINDOW", self._quit)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  CONSTRUCCIÓN UI
+    # ══════════════════════════════════════════════════════════════════
+    def _build(self):
+        self._topbar()
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=16, pady=10)
+        body.columnconfigure(0, weight=0, minsize=310)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+        self._left(body)
+        self._right(body)
+
+    # ── Topbar ───────────────────────────────────────────────────────
+    def _topbar(self):
+        bar = tk.Frame(self, bg=SURF, height=56)
+        bar.pack(fill=tk.X); bar.pack_propagate(False)
+
+        # Línea de acento superior
+        tk.Frame(self, bg=C_PURPLE, height=2).pack(fill=tk.X)
+
+        tk.Label(bar, text="DOUGLAS75", font=(FONT, 14, "bold"),
+                 bg=SURF, fg=TXT).pack(side=tk.LEFT, padx=16, pady=16)
+        tk.Label(bar, text="Extrusora PP  2.4 → 1.75 mm",
+                 font=(FONT, 9), bg=SURF, fg=TXT2).pack(side=tk.LEFT, pady=18)
+
+        tk.Label(bar, text="Puerto:", bg=SURF, fg=TXT2,
+                 font=(FONT, 9)).pack(side=tk.LEFT, padx=(24, 4))
+        self._cb = ttk.Combobox(bar, textvariable=self._port,
+                                 width=13, state="readonly")
+        self._cb.pack(side=tk.LEFT, pady=16)
+        tk.Button(bar, text="↻", command=self._scan_ports,
+                  bg=SURF, fg=TXT2, relief=tk.FLAT,
+                  font=(FONT, 13), cursor="hand2",
+                  activebackground=SURF2, bd=0).pack(side=tk.LEFT, padx=2)
+
+        self._btn_conn = tk.Button(bar, text="  Conectar  ",
+                                    command=self._toggle,
+                                    bg=C_BLUE2, fg=C_BLUE, relief=tk.FLAT,
+                                    font=(FONT, 10, "bold"), cursor="hand2",
+                                    activebackground=BORDER2, activeforeground=C_BLUE,
+                                    padx=8, pady=5,
+                                    highlightthickness=1,
+                                    highlightbackground=C_BLUE)
+        self._btn_conn.pack(side=tk.LEFT, padx=10)
+
+        # Estado run
+        self._run_badge = tk.Label(bar, text="■ DETENIDO",
+                                    bg=SURF, fg=TXT3,
+                                    font=(FONT, 9, "bold"))
+        self._run_badge.pack(side=tk.RIGHT, padx=6)
+
+        tk.Label(bar, textvariable=self._status,
+                 bg=SURF, fg=TXT2, font=(FONT, 9)).pack(side=tk.RIGHT, padx=10)
+
+    # ── Panel izquierdo ──────────────────────────────────────────────
+    def _left(self, parent):
+        f = tk.Frame(parent, bg=BG)
+        f.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+
+        # Métricas compactas en fila
+        mrow = tk.Frame(f, bg=BG); mrow.pack(fill=tk.X, pady=(0, 8))
+        mrow.columnconfigure(0, weight=1); mrow.columnconfigure(1, weight=1); mrow.columnconfigure(2, weight=1)
+        self._mini_metric(mrow, "Temperatura", self._vTemp, "°C",    C_RED   ).grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self._mini_metric(mrow, "PWM Heat",    self._vPwm,  "/255",  C_AMBER ).grid(row=0, column=1, sticky="nsew", padx=2)
+        self._mini_metric(mrow, "PWM Fan",     self._vFan,  "/255",  C_TEAL  ).grid(row=0, column=2, sticky="nsew", padx=(4, 0))
+
+        # Advertencia sensor
+        self._warn_lbl = tk.Label(f, textvariable=self._warnMsg,
+                                   bg=C_RED2, fg=C_RED,
+                                   font=(FONT, 9, "bold"),
+                                   wraplength=280, justify=tk.LEFT,
+                                   pady=5, padx=10)
+
+        # Temperatura setpoint
+        sp_c = self._card(f, "Temperatura setpoint")
+        sp_c.pack(fill=tk.X, pady=(0, 8))
+        top = tk.Frame(sp_c, bg=SURF); top.pack(fill=tk.X, padx=12, pady=(4, 2))
+        tk.Label(top, textvariable=self._dSP, bg=SURF, fg=C_BLUE,
+                 font=(FONT, 18, "bold")).pack(side=tk.LEFT)
+        tk.Button(top, text="Enviar", command=self._send_sp,
+                  bg=C_BLUE2, fg=C_BLUE, relief=tk.FLAT,
+                  font=(FONT, 9, "bold"), cursor="hand2",
+                  activebackground=BORDER2, padx=10, pady=4,
+                  highlightthickness=1, highlightbackground=BORDER).pack(side=tk.RIGHT)
+        sl = tk.Scale(sp_c, from_=T_MIN, to=T_MAX, orient=tk.HORIZONTAL,
+                      variable=self._vSP, bg=SURF, fg=TXT2,
+                      troughcolor=BORDER2, activebackground=C_BLUE,
+                      highlightthickness=0, showvalue=False,
+                      sliderlength=18, sliderrelief=tk.FLAT)
+        sl.pack(fill=tk.X, padx=12, pady=(0, 4))
+        r2 = tk.Frame(sp_c, bg=SURF); r2.pack(fill=tk.X, padx=14, pady=(0, 8))
+        tk.Label(r2, text=f"{T_MIN}°", bg=SURF, fg=TXT3, font=(FONT, 8)).pack(side=tk.LEFT)
+        tk.Label(r2, text=f"{T_MAX}°", bg=SURF, fg=TXT3, font=(FONT, 8)).pack(side=tk.RIGHT)
+
+        # Cards motores independientes
+        self._m1 = MotorCard(f, 1, self._send)
+        self._m1.pack(fill=tk.X, pady=(0, 6))
+        self._m2 = MotorCard(f, 2, self._send)
+        self._m2.pack(fill=tk.X, pady=(0, 8))
+
+        # Ventilador + RUN/STOP en una fila
+        bot_row = tk.Frame(f, bg=BG); bot_row.pack(fill=tk.X)
+        bot_row.columnconfigure(0, weight=1); bot_row.columnconfigure(1, weight=2)
+
+        fan_c = self._card(bot_row, "Ventilador")
+        fan_c.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        fr = tk.Frame(fan_c, bg=SURF); fr.pack(fill=tk.X, padx=8, pady=(0, 10))
+        for label, val, color in [("AUTO", True, C_TEAL), ("OFF", False, TXT3)]:
+            tk.Radiobutton(fr, text=label, variable=self._fanAuto, value=val,
+                           command=self._send_fan,
+                           bg=SURF, fg=color, selectcolor=SURF2,
+                           activebackground=SURF, activeforeground=color,
+                           font=(FONT, 10, "bold"),
+                           cursor="hand2").pack(side=tk.LEFT, padx=6)
+
+        run_c = tk.Frame(bot_row, bg=BG)
+        run_c.grid(row=0, column=1, sticky="nsew")
+        tk.Button(run_c, text="▶  INICIAR", command=self._send_run,
+                  bg=C_GREEN2, fg=C_GREEN, relief=tk.FLAT,
+                  font=(FONT, 11, "bold"), cursor="hand2",
+                  activebackground=BORDER2, activeforeground=C_GREEN,
+                  pady=8,
+                  highlightthickness=1,
+                  highlightbackground=C_GREEN).pack(fill=tk.X, pady=(0, 4))
+        tk.Button(run_c, text="■  DETENER", command=self._send_stop,
+                  bg=C_RED2, fg=C_RED, relief=tk.FLAT,
+                  font=(FONT, 11, "bold"), cursor="hand2",
+                  activebackground=BORDER2, activeforeground=C_RED,
+                  pady=8,
+                  highlightthickness=1,
+                  highlightbackground=C_RED).pack(fill=tk.X)
+
+    # ── Panel derecho ────────────────────────────────────────────────
+    def _right(self, parent):
+        f = tk.Frame(parent, bg=BG)
+        f.grid(row=0, column=1, sticky="nsew")
+        f.rowconfigure(1, weight=1); f.columnconfigure(0, weight=1)
+
+        # Métricas filamento
+        fil = tk.Frame(f, bg=BG)
+        fil.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        for i in range(4): fil.columnconfigure(i, weight=1)
+
+        metrics_data = [
+            ("Filamento procesado", self._vFilMm, C_TEAL),
+            ("Peso estimado",       self._vFilG,  C_TEAL),
+            ("Velocidad lineal",    self._vRate,  C_PURPLE),
+            ("Producción",          self._vRateG, C_PURPLE),
+        ]
+        for i, (label, var, color) in enumerate(metrics_data):
+            card = tk.Frame(fil, bg=SURF, highlightthickness=1,
+                            highlightbackground=BORDER)
+            card.grid(row=0, column=i, sticky="nsew",
+                      padx=(0 if i == 0 else 5, 0))
+            tk.Label(card, text=label, bg=SURF, fg=TXT2,
+                     font=(FONT, 8)).pack(anchor="w", padx=10, pady=(7, 0))
+            tk.Label(card, textvariable=var, bg=SURF, fg=color,
+                     font=(FONT, 15, "bold")).pack(anchor="w", padx=10, pady=(0, 7))
+
+        tk.Button(fil, text="↺ Reset", command=self._reset_counter,
+                  bg=SURF2, fg=TXT3, relief=tk.FLAT, font=(FONT, 8),
+                  cursor="hand2",
+                  activebackground=BORDER).grid(row=1, column=3, sticky="e", padx=2, pady=2)
+
+        # Gráfica matplotlib oscura
+        plt.style.use("dark_background")
+        fig = Figure(figsize=(6, 4.4), dpi=96)
+        fig.patch.set_facecolor(SURF)
+        self.ax = fig.add_subplot(111)
+        self.ax.set_facecolor(BG)
+        self.ax.set_title("Temperatura en tiempo real",
+                          fontsize=11, color=TXT2, pad=8)
+        self.ax.set_xlabel("Tiempo (s)", fontsize=9, color=TXT3)
+        self.ax.set_ylabel("°C",         fontsize=9, color=TXT3)
+        self.ax.tick_params(labelsize=8, colors=TXT3)
+        for sp in self.ax.spines.values():
+            sp.set_edgecolor(BORDER2)
+        self.ax.grid(True, ls="--", alpha=0.3, color=BORDER2)
+        self.ax.set_ylim(T_MIN, T_MAX)
+        self._lT,  = self.ax.plot([], [], color=C_RED,    lw=2,   label="Real")
+        self._lSP, = self.ax.plot([], [], color=C_BLUE,   lw=1.5, ls="--", label="Setpoint")
+        self.ax.legend(fontsize=9, framealpha=0.3,
+                       facecolor=SURF, edgecolor=BORDER2,
+                       labelcolor=TXT2)
+        fig.tight_layout(pad=1.8)
+
+        self._canvas = FigureCanvasTkAgg(fig, master=f)
+        self._canvas.get_tk_widget().configure(bg=SURF)
+        self._canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+
+        # Barra estado
+        bot = tk.Frame(f, bg=SURF, height=28)
+        bot.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        bot.pack_propagate(False)
+        tk.Label(bot, textvariable=self._lastMsg,
+                 bg=SURF, fg=TXT3, font=(FONT, 9)).pack(side=tk.LEFT, padx=10, pady=6)
+
+    # ── Widgets helper ───────────────────────────────────────────────
+    def _card(self, parent, title):
+        f = tk.Frame(parent, bg=SURF, highlightthickness=1,
+                     highlightbackground=BORDER)
+        tk.Label(f, text=title.upper(), bg=SURF, fg=TXT3,
+                 font=(FONT, 8, "bold")).pack(anchor="w", padx=12, pady=(9, 3))
+        return f
+
+    def _mini_metric(self, parent, label, var, unit, color):
+        f = tk.Frame(parent, bg=SURF, highlightthickness=1,
+                     highlightbackground=BORDER)
+        tk.Label(f, text=label, bg=SURF, fg=TXT3,
+                 font=(FONT, 8)).pack(anchor="w", padx=10, pady=(6, 0))
+        r = tk.Frame(f, bg=SURF); r.pack(anchor="w", padx=10, pady=(0, 6))
+        tk.Label(r, textvariable=var, bg=SURF, fg=color,
+                 font=(FONT, 18, "bold")).pack(side=tk.LEFT)
+        tk.Label(r, text=f" {unit}", bg=SURF, fg=TXT3,
+                 font=(FONT, 9)).pack(side=tk.LEFT, pady=(4, 0))
+        return f
+
+    # ══════════════════════════════════════════════════════════════════
+    #  PUERTOS / CONEXIÓN
+    # ══════════════════════════════════════════════════════════════════
+    def _scan_ports(self):
+        ports = [p.device for p in serial.tools.list_ports.comports()]
+        self._cb["values"] = ports
+        if ports and not self._port.get():
+            self._port.set(ports[0])
+
+    def _toggle(self):
+        if self.connected: self._disconnect()
+        else:              self._connect()
+
+    def _connect(self):
+        port = self._port.get()
+        if not port:
+            messagebox.showwarning("Puerto", "Selecciona un puerto."); return
+        try:
+            self.ser = serial.Serial(port, BAUD, timeout=1)
+            time.sleep(0.1); self.ser.reset_input_buffer()
+            self.connected = True; self.t0 = time.time()
+            self.bt.clear(); self.bT.clear(); self.bSP.clear()
+            self._status.set(f"●  {port}")
+            self._btn_conn.config(text="  Desconectar  ",
+                                   bg=C_RED2, fg=C_RED,
+                                   highlightbackground=C_RED)
+            threading.Thread(target=self._reader, daemon=True).start()
+        except serial.SerialException as e:
+            messagebox.showerror("Error de conexión", str(e))
+
+    def _disconnect(self):
+        self.connected = False
+        try:
+            if self.ser and self.ser.is_open: self.ser.close()
+        except: pass
+        self.ser = None
+        self._status.set("●  Desconectado")
+        for v in (self._vTemp, self._vPwm, self._vFan): v.set("—")
+        self._btn_conn.config(text="  Conectar  ",
+                               bg=C_BLUE2, fg=C_BLUE,
+                               highlightbackground=C_BLUE)
+        self._warnMsg.set(""); self._warn_lbl.pack_forget()
+        self._run_badge.config(text="■ DETENIDO", fg=TXT3)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  LECTOR SERIAL
+    # ══════════════════════════════════════════════════════════════════
+    def _reader(self):
+        while self.connected:
+            try:
+                raw = self.ser.readline().decode(errors="ignore").strip()
+                if not raw: continue
+                m = PAT.match(raw)
+                if not m: continue
+                t_s=m.group(1); sp=int(m.group(2))
+                d1=int(m.group(3)); d2=int(m.group(4))
+                pwm=int(m.group(5)); fan=int(m.group(6)); run=int(m.group(7))
+                ok = (t_s != "ERR")
+                t  = float(t_s) if ok else None
+                elapsed = time.time() - self.t0
+                if t is not None:
+                    self.bt.append(elapsed)
+                    self.bT.append(t)
+                    self.bSP.append(sp)
+                self.after(0, self._refresh, t, sp, d1, d2, pwm, fan, run, ok)
+            except:
+                if not self.connected: break
+
+    def _refresh(self, t, sp, d1, d2, pwm, fan, run, ok):
+        if t is not None: self._vTemp.set(f"{t:.1f}")
+        self._vPwm.set(str(pwm)); self._vFan.set(str(fan))
+        self.esp_running = bool(run)
+        self._last_d1 = d1; self._last_d2 = d2
+        self._m1.set_rpm_display(d1)
+        self._m2.set_rpm_display(d2)
+        ts = time.strftime("%H:%M:%S")
+        msg = (f"{ts}  T:{t:.1f}°C  SP:{sp}°C  D1:{d1}  D2:{d2} RPM  "
+               f"PWM:{pwm}  FAN:{fan}  {'▶ CORRIENDO' if run else '■ DETENIDO'}"
+               if t else f"{ts}  ⚠ ERROR SENSOR NTC")
+        self._lastMsg.set(msg)
+        self._run_badge.config(
+            text="▶ CORRIENDO" if run else "■ DETENIDO",
+            fg=C_GREEN if run else TXT3)
+        if not ok:
+            self._warnMsg.set("⚠ ERROR SENSOR NTC — calefactor apagado")
+            self._warn_lbl.pack(fill=tk.X, pady=(0, 6))
+        else:
+            self._warnMsg.set(""); self._warn_lbl.pack_forget()
+
+    # ══════════════════════════════════════════════════════════════════
+    #  CONTADOR FILAMENTO
+    # ══════════════════════════════════════════════════════════════════
+    def _tick_filament(self):
+        if self.esp_running and self._last_d1 > 0:
+            inc = mm_per_min(self._last_d1) / 120.0
+            self.filament_mm += inc
+            r_cm = (OUTPUT_DIAM_MM / 2) / 10
+            g = math.pi * r_cm**2 * (self.filament_mm / 10) * PP_DENSITY
+            self._vFilMm.set(f"{self.filament_mm:.0f} mm")
+            self._vFilG.set( f"{g:.2f} g")
+            self._vRate.set( f"{mm_per_min(self._last_d1):.0f} mm/min")
+            self._vRateG.set(f"{grams_per_hour(self._last_d1):.1f} g/h")
+        self.after(500, self._tick_filament)
+
+    def _reset_counter(self):
+        self.filament_mm = 0.0
+        self._vFilMm.set("0 mm"); self._vFilG.set("0.00 g")
+
+    # ══════════════════════════════════════════════════════════════════
+    #  GRÁFICA
+    # ══════════════════════════════════════════════════════════════════
+    def _tick_chart(self):
+        if len(self.bt) >= 2:
+            xs=list(self.bt); yt=list(self.bT); ys=list(self.bSP)
+            self._lT.set_data(xs, yt); self._lSP.set_data(xs, ys)
+            xmax=xs[-1]
+            self.ax.set_xlim(max(0.0, xmax-CHART_SECS), xmax+2)
+            all_y=yt+ys
+            self.ax.set_ylim(min(all_y)-15, max(all_y)+15)
+            self._canvas.draw_idle()
+        self.after(1000, self._tick_chart)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  ENVÍO COMANDOS
+    # ══════════════════════════════════════════════════════════════════
+    def _send(self, cmd: str) -> bool:
+        if not (self.connected and self.ser and self.ser.is_open):
+            messagebox.showinfo("Sin conexión", "Conecta el ESP32 primero.")
+            return False
+        self.ser.write(f"{cmd}\n".encode())
+        return True
+
+    def _send_sp(self):
+        self._send(f"ST:{max(T_MIN, min(T_MAX, self._vSP.get()))}")
+
+    def _send_fan(self):
+        self._send(f"SF:{'1' if self._fanAuto.get() else '0'}")
+
+    def _send_run(self):  self._send("RUN")
+    def _send_stop(self): self._send("STOP")
+
+    def _quit(self):
+        self._disconnect(); self.destroy()
+
+
+if __name__ == "__main__":
+    App().mainloop()
