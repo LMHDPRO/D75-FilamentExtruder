@@ -29,7 +29,7 @@
 
 ## ¿Qué es esto?
 
-**Douglas75** es un controlador open-source para una extrusora de filamento de polipropileno. Toma material de entrada de **2.4 mm** y lo reduce a **1.75 mm**, listo para impresión 3D.
+**Douglas75** es un controlador open-source para una extrusora de filamento, desarrollado originalmente en el marco de un **Practicum** universitario para reducir el diámetro de filamento fabricado artesanalmente. El diseño nació con polipropileno (PP) de **2.4 mm → 1.75 mm**, pero el sistema es compatible con cualquier tipo de filamento termoplástico que requiera un proceso de reducción controlada de diámetro.
 
 El sistema corre en un **ESP32 con FreeRTOS dual-core** — un núcleo dedicado al control PID de temperatura y otro a la interfaz de usuario. Incluye un **panel de control Tkinter** para operación desde PC vía USB serial.
 
@@ -52,22 +52,31 @@ El sistema corre en un **ESP32 con FreeRTOS dual-core** — un núcleo dedicado 
 
 ## Hardware
 
-### Componentes
+### Bill of Materials (BOM)
 
-| Componente | Modelo | Cantidad |
-|---|---|---|
-| MCU | ESP32-DevKitC (38 pines) | 1 |
-| Driver motor | TB6600 | 2 |
-| Motor | NEMA17 200 pasos/rev | 2 |
-| Termistor | NTC 100K genérico Ender3 V1 | 1 |
-| MOSFET calefactor | IRLZ44N | 1 |
-| MOSFET ventilador | IRLZ44N | 1 |
-| Pantalla | LCD I2C 20×4 (PCF8574) | 1 |
-| Encoder | KY-040 con pulsador | 1 |
-| Resistor pull-up NTC | 4.7 KΩ 1% | 1 |
-| Resistor gate MOSFET | 10 Ω | 2 |
-| Resistor pull-down gate | 10 KΩ | 2 |
-| Buck converter | LM2596 12V→5V | 1 |
+| # | Categoría | Componente | Modelo / Especificación | Qty |
+|:---:|---|---|---|:---:|
+| 1 | 🧠 MCU | Microcontrolador | ESP32 Development Board | 1 |
+| 2 | 🔥 Calefactor | Hotend completo | 40W 12V Ceramic Cartridge Heater + NTC 100K Thermistor | 1 |
+| 3 | 🔩 Boquilla | Nozzle | MK8 0.4 mm Nozzle | 1 |
+| 4 | ⚙️ Extrusión | Extrusor | Creality MK8 Extruder | 1 |
+| 5 | ⚙️ Motor | Motor paso a paso | NEMA17 Stepper Motor | 2 |
+| 6 | ⚙️ Driver | Driver motor | TB6600 Stepper Motor Driver | 2 |
+| 7 | 🔧 Soporte | Montura motor | NEMA Motor Mount | 2 |
+| 8 | 🖥️ Pantalla | Pantalla LCD | 20×4 LCD Screen I2C | 1 |
+| 9 | 🎛️ Entrada | Encoder rotatorio | KY-040 Rotary Encoder | 1 |
+| 10 | 🧵 Sensor | Sensor de filamento | Filament Runout Sensor | 1 |
+| 11 | ⚡ Regulador | Regulador voltaje | L7805CV 5V Voltage Regulator (TO-220) | 1 |
+| 12 | ⚡ MOSFET | MOSFET N-Channel | IRFL44N N-Channel MOSFET | 2 |
+| 13 | 🔩 Rodamientos | Rodamiento | 608ZZ Bearing | 4 |
+| 14 | 💨 Ventilador | Fan | 4010 Fan 12V | 1 |
+| 15 | 🟫 PCB | Placa base | 15×15 cm Single-Sided Phenolic Board | 1 |
+| 16 | 🔌 Conectores | Pin header | 36-pin Single Row Pin Header (2.54 mm) | 1 |
+| 17 | 🔌 Conectores | Female header | 10-pin Female Header (2.54 mm) | 2 |
+| 18 | 🔌 Conectores | Terminales | 2-Pin Green Screw Terminals | 6 |
+| 19 | 🔋 Capacitores | Condensador electrolítico | 100 µF | 2 |
+| 20 | 🔋 Capacitores | Condensador cerámico | 100 nF | 2 |
+| 21 | 🔩 Tornillería | Tornillos Allen | M2, M3 & M4 Socket Head Screws (surtido) | — |
 
 ### Mapa de pines ESP32
 
@@ -344,15 +353,29 @@ D75-FilamentExtruder/
 | | Nombre | |
 |:---:|:---|:---:|
 | 🧑‍💻 | **Skyler Schenck** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/skyler-schenck/) |
-| 🧑‍💻 | **Douglas Fuentes** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/douglas-fuentes-de-la-o/) |
-| 🧑‍💻 | **José Pardiñaz** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/josepardinaz/) |
-| 🧑‍🔬 | **Gerardo Alonzo** | [![Research](https://img.shields.io/badge/Research-Profile-6B46C1?style=flat-square)](https://research.rciueducation.org/es/persons/gerardo-manuel-alonzo-medina/) |
 | 🧑‍💻 | **Darian Cuellar** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/darian-cuellar-jimenez-6a144630b/) |
-| 🧑‍💻 | **Andrés Oliva** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/andr%C3%A9s-i-oliva-avil%C3%A9s-7917b397/) |
+| 🧑‍💻 | **José Pardiñaz** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/josepardinaz/) |
+| 🧑‍💻 | **Douglas Fuentes** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/douglas-fuentes-de-la-o/) |
+| 🧑‍🔬 | **Gerardo Alonzo** | [![Research](https://img.shields.io/badge/Research-Profile-6B46C1?style=flat-square)](https://research.rciueducation.org/es/persons/gerardo-manuel-alonzo-medina/) |
+| 🧑‍🔬 | **Andrés Oliva** | [![Research](https://img.shields.io/badge/Research-Profile-6B46C1?style=flat-square)](https://research.rciueducation.org/es/persons/andr%C3%A9s-iv%C3%A1n-oliva-avil%C3%A9s/) |
 
 <br>
 
-[![Anáhuac Mayab](https://img.shields.io/badge/Universidad_Anáhuac_Mayab-Mérida%2C_MX-D4111A?style=for-the-badge)](https://www.anahuac.mx/mayab/)
+[![Anáhuac Mayab](https://img.shields.io/badge/Universidad_Anáhuac_Mayab-Mérida%2C_MX-D4111A?style=for-the-badge)](https://merida.anahuac.mx/)
+
+</div>
+
+---
+
+## Apoya el proyecto
+
+Este proyecto es **open-source bajo licencia MIT** — puedes usarlo, modificarlo y distribuirlo libremente. Si te fue útil y quieres apoyar al creador, puedes conseguir los archivos 3D del modelo físico de la extrusora en Cults3D a precio libre:
+
+<div align="center">
+
+[![Cults3D](https://img.shields.io/badge/Cults3D-Extrusora_DOU175-FF6B35?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0tMiAxNHYtNGgtNGw2LTZjMCAyLjIxIDEuNzkgNCA0IDRsLTYgNnoiLz48L3N2Zz4=)](https://cults3d.com/es/modelo-3d/herramientas/extrusora-de-filamento-dou175)
+
+*Los archivos de código son y serán siempre gratuitos. El modelo 3D está disponible en Cults a precio libre — cualquier contribución es bienvenida y apoya el desarrollo continuo.*
 
 </div>
 
