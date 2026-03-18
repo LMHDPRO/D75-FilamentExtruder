@@ -1,12 +1,12 @@
 <div align="center">
 
 ```
-██████╗ ███████╗
-██╔══██╗╚════██║
-██║  ██║    ██╔╝
-██║  ██║   ██╔╝
-██████╔╝   ██║
-╚═════╝    ╚═╝  Douglas75
+██████╗  ██████╗ ██╗   ██╗ ██████╗ ██╗      █████╗ ███████╗ ██╗███████╗
+██╔══██╗██╔═══██╗██║   ██║██╔════╝ ██║     ██╔══██╗██╔════╝███║██╔════╝
+██║  ██║██║   ██║██║   ██║██║  ███╗██║     ███████║███████╗╚██║███████╗
+██║  ██║██║   ██║██║   ██║██║   ██║██║     ██╔══██║╚════██║ ██║╚════██║
+██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝███████╗██║  ██║███████║ ██║███████║
+╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝╚══════╝ ╚═╝╚══════╝
 ```
 
 # Filament Extruder Controller
@@ -71,21 +71,21 @@ El sistema corre en un **ESP32 con FreeRTOS dual-core** — un núcleo dedicado 
 
 ### Mapa de pines ESP32
 
-| GPIO | Señal | Tipo | Notas |
-|---|---|---|---|
-| `18` | OUTA encoder (CLK) | Input interrupt | |
-| `19` | OUTB encoder (DT) | Input interrupt | |
-| `5` | SW encoder | Input PULLUP | |
-| `34` | Termistor NTC | ADC1_CH6 | Input-only, sin pull interno |
-| `25` | MOSFET calefactor | PWM LEDC ch0 | |
-| `23` | MOSFET ventilador | PWM LEDC ch1 | |
-| `26` | STEP Motor 1 | Output | Motor reductor |
-| `27` | DIR Motor 1 | Output | |
-| `4` | STEP Motor 2 | Output | Motor arrastre |
-| `2` | DIR Motor 2 | Output | TB6600 sin pull-up en DIR → seguro |
-| `13` | EN_Driver | Output | Compartido ambos TB6600 |
-| `21` | SDA LCD | I2C | |
-| `22` | SCL LCD | I2C | |
+| GPIO | Señal | Tipo |
+|---|---|---|
+| `18` | OUTA encoder (CLK) | Input interrupt |
+| `19` | OUTB encoder (DT) | Input interrupt |
+| `5` | SW encoder | Input PULLUP |
+| `34` | Termistor NTC | ADC1_CH6 |
+| `25` | MOSFET calefactor | PWM LEDC ch0 |
+| `23` | MOSFET ventilador | PWM LEDC ch1 |
+| `26` | STEP Motor 1 | Output |
+| `27` | DIR Motor 1 | Output |
+| `4` | STEP Motor 2 | Output |
+| `2` | DIR Motor 2 | Output |
+| `13` | EN_Driver | Output |
+| `21` | SDA LCD | I2C |
+| `22` | SCL LCD | I2C |
 
 > ⚠️ **Pines prohibidos:** GPIO 0, 6–11 (flash interno), 12, 15
 
@@ -204,30 +204,43 @@ T:160.5,S:160,D1:100,D2:100,P:127,F:64,RUN:1
 
 ### Firmware ESP32
 
-**1. Agregar plataforma ESP32:**
+**1. Instalar PlatformIO:**
 
+Instala la extensión [PlatformIO IDE](https://platformio.org/install/ide?install=vscode) para VS Code.
+
+**2. Clonar y abrir el proyecto:**
+
+```bash
+git clone https://github.com/LMHDPRO/D75-FilamentExtruder.git
+cd D75-FilamentExtruder
+code .   # abrir en VS Code con PlatformIO
 ```
-File → Preferences → Additional boards manager URLs:
-https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
 
-Tools → Boards Manager → buscar "esp32" → instalar "esp32 by Espressif Systems"
-Tools → Board → ESP32 Arduino → ESP32 Dev Module
+**3. Las dependencias se instalan automáticamente** desde `platformio.ini`:
+
+```ini
+[env:esp32dev]
+platform  = espressif32
+board     = esp32dev
+framework = arduino
+lib_deps  =
+    mathertel/RotaryEncoder
+    br3ttb/PID
+    waspinator/AccelStepper
+    marcoschwartz/LiquidCrystal_I2C
 ```
 
-**2. Instalar librerías (Library Manager):**
+**4. Subir el firmware:**
 
-| Librería | Autor |
-|---|---|
-| `RotaryEncoder` | Matthias Hertel |
-| `PID_v1` | Brett Beauregard |
-| `AccelStepper` | Mike McCauley |
-| `LiquidCrystal_I2C` | Frank de Brabander |
+Botón **Upload** (→) en la barra de PlatformIO, o:
 
-**3. Subir el firmware:**
+```bash
+pio run --target upload
+```
 
 > Si no entra en modo flash automáticamente, mantén presionado el botón **BOOT** del DevKit mientras sube.
 
-**4. Verificar en Serial Monitor (115200 baud):**
+**5. Verificar en Serial Monitor (115200 baud):**
 
 ```
 T:25.3,S:160,D1:100,D2:100,P:0,F:0,RUN:0   ✓ Sensor OK
@@ -317,6 +330,31 @@ D75-FilamentExtruder/
 - [Arduino PID Library](https://github.com/br3ttb/Arduino-PID-Library) — Brett Beauregard
 - [AccelStepper](https://www.airspayce.com/mikem/arduino/AccelStepper/) — Mike McCauley
 - [LiquidCrystal_I2C](https://github.com/marcoschwartz/LiquidCrystal_I2C) — Frank de Brabander
+
+---
+
+## Equipo
+
+<div align="center">
+
+*Proyecto desarrollado en la* **Universidad Anáhuac Mayab** *— Mérida, Yucatán*
+
+<br>
+
+| | Nombre | |
+|:---:|:---|:---:|
+| 🧑‍💻 | **Skyler Schenck** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/skyler-schenck/) |
+| 🧑‍💻 | **Douglas Fuentes** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/douglas-fuentes-de-la-o/) |
+| 🧑‍💻 | **José Pardiñaz** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/josepardinaz/) |
+| 🧑‍🔬 | **Gerardo Alonzo** | [![Research](https://img.shields.io/badge/Research-Profile-6B46C1?style=flat-square)](https://research.rciueducation.org/es/persons/gerardo-manuel-alonzo-medina/) |
+| 🧑‍💻 | **Darian Cuellar** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/darian-cuellar-jimenez-6a144630b/) |
+| 🧑‍💻 | **Andrés Oliva** | [![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/andr%C3%A9s-i-oliva-avil%C3%A9s-7917b397/) |
+
+<br>
+
+[![Anáhuac Mayab](https://img.shields.io/badge/Universidad_Anáhuac_Mayab-Mérida%2C_MX-D4111A?style=for-the-badge)](https://www.anahuac.mx/mayab/)
+
+</div>
 
 ---
 
